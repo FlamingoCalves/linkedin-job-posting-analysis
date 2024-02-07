@@ -1,7 +1,7 @@
 # LinkedIn Job Post Analysis
 
 ## Project Overview
-This project provides an in-depth analysis of over 30,000 recent LinkedIn job postings to uncover what factors contribute to the success of a job listing, measured by the number of applications and views. Through comprehensive data cleaning, exploratory data analysis (EDA), feature engineering, and regression analysis, this study reveals intriguing insights into job market trends and applicant preferences.
+This project provides an in-depth analysis of over 60,000 recent LinkedIn job postings to uncover what factors contribute to the success of a job listing, measured by the number of applications and views. Through comprehensive data cleaning, exploratory data analysis (EDA), feature engineering, and regression analysis, this study reveals intriguing insights into job market trends and applicant preferences.
 
 ## Key Findings
 - **Remote Work Appeal**: Job postings offering remote work options significantly attract more views and applications.
