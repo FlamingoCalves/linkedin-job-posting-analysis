@@ -1,0 +1,402 @@
+---
+title: "Analysis of Factors Affecting Job Applications and Views on LinkedIn"
+format: html
+editor: visual
+---
+
+## Context
+
+In the dynamic landscape of job hunting and recruitment, understanding what makes a job posting successful is crucial for both job seekers and employers. This project aims to uncover the underlying factors that contribute to the effectiveness of job postings on LinkedIn, measured in terms of the number of applications and views each posting receives.
+
+## Methodology
+
+My analysis began with a comprehensive dataset of LinkedIn job postings, encompassing various features such as follower count, remote work availability, pay periods, experience levels, and compensation details. I employed a multifaceted approach to my analysis, including:
+
+-   **Data Cleaning and Preparation:** Handling missing values, encoding categorical variables, and ensuring data consistency.
+-   **Feature Engineering:** Creating new variables, such as an average salary measure and indicators for the presence of specific job attributes.
+-   **Exploratory Data Analysis (EDA):** Visualizing distributions, identifying patterns, and exploring relationships between different variables.
+-   **Regression Analysis:** Implementing linear regression models to quantify the impact of various factors on the number of applications and views.
+
+## Key Findings
+
+-   **Follower Count's Limited Influence:** Contrary to expectations, the follower count of the posting company does not significantly impact the number of applications received.
+-   **Significant Impact of Remote Work:** Job postings that allow for remote work attract significantly more applications and views, underscoring the growing preference for flexibility among job seekers.
+-   **The Role of Common Keywords:** While there is a set of frequently used words in job descriptions, their presence correlates with higher applications and views only up to a certain frequency. This suggests that while specific language can draw attention, it is not the sole determinant of a posting's success.
+-   **Influence of Job Characteristics:** Several factors emerged as more influential, including the option for remote work, multiple pay periods, targeting associate or internship experience levels, and offering hourly compensation. These elements cater to diverse job seeker preferences and practical considerations.
+-   **Nuanced Role of Salary:** At a broad level, salary details do not universally predict a posting's success, likely due to varied expectations among job seekers. However, it is posited that a more detailed analysis within specific job categories or levels would reveal a stronger relationship between compensation and job application behavior.
+
+## Conclusion
+
+My findings offer valuable insights into what makes a job posting on LinkedIn successful. While some factors such as remote work availability and job characteristics significantly affect applications and views, others like follower count and salary details play more nuanced roles. These insights can guide employers in crafting more effective job postings and inform job seekers about the traits of appealing job offers.
+
+```{r, include=FALSE, cache=TRUE}
+# Set CRAN mirror
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# Suppress messages and warnings during package installation
+suppressMessages(suppressWarnings({
+  install.packages(c("dplyr", "tidyr", "tm", "ggplot2", "caret", "knitr", "DT", "fastDummies", "lubridate", "tokenizers", "gridExtra", "glmnet", "broom"))
+}))
+```
+
+```{r, include=FALSE}
+# Load necessary libraries
+suppressMessages(suppressWarnings({
+  library(dplyr)
+  library(tidyr)
+  library(tm)
+  library(ggplot2)
+  library(caret)
+  library(knitr)
+  library(DT)
+  library(fastDummies)
+  library(lubridate)
+  library(tokenizers)
+  library(gridExtra)
+  library(glmnet)
+  library(broom)
+}))
+
+# Set options to display all columns in a data frame
+options(dplyr.width = Inf)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# Read in the data
+df <- read.csv('job_postings.csv')
+emp_count_df <- read.csv('company_details/employee_counts.csv')
+
+# Merge the data frames
+merged_df <- left_join(df, emp_count_df, by = "company_id")
+
+# Display the dataframe as an interactive table
+datatable(head(merged_df, 1))
+```
+
+```{r}
+# Drop rows with NA in the 'follower_count' column
+merged_df <- merged_df %>% drop_na(follower_count)
+
+# Impute 0 where necessary
+merged_df <- merged_df %>%
+  mutate(
+    applies = ifelse(is.na(applies), 0, applies),
+    remote_allowed = ifelse(is.na(remote_allowed), 0, remote_allowed)
+  )
+
+# Print the number of NA values in each column
+follower_na_count <- sum(is.na(merged_df$follower_count))
+applies_na_count <- sum(is.na(merged_df$applies))
+remote_allowed_na_count <- sum(is.na(merged_df$remote_allowed))
+
+
+cat(
+  sprintf("Follower NA Count: %d\n", follower_na_count),
+  sprintf("Applies NA Count: %d\n", applies_na_count),
+  sprintf("Remote Allowed NA Count: %d\n", remote_allowed_na_count)
+)
+```
+
+```{r}
+# Change time columns to datetime
+time_columns <- c('original_listed_time', 'closed_time', 'expiry', 'listed_time', 'time_recorded')
+
+for (column in time_columns) {
+  merged_df[[column]] <- as_datetime(merged_df[[column]] / 1000)  # Divide by 1000 to convert milliseconds to seconds
+}
+
+# Create dummy variables for categorical columns
+cat_columns <- c('pay_period', 'formatted_work_type', 'application_type', 'formatted_experience_level', 'work_type', 'compensation_type')
+merged_df <- dummy_cols(merged_df, select_columns = cat_columns, remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+
+# Display the first 5 rows of the dataframe
+datatable(head(select(merged_df, -description), 1))
+```
+
+```{r, cache=TRUE}
+# Load stop words
+stop_words <- stopwords("en")
+
+# Identify Top 50 Jobs
+top_jobs <- merged_df %>%
+  arrange(desc(views), desc(applies)) %>%
+  head(50)
+
+# Create a Corpus using the top 50 descriptions
+corpus <- paste(top_jobs$description, collapse = " ")
+
+# Tokenize and Clean
+words <- unlist(tokenize_words(corpus))
+words <- tolower(words[grepl("^[a-z]+$", words)])  # Keep words that are purely alphabetical
+words <- words[!words %in% stop_words]
+
+# Find Most Common Words
+word_counts <- sort(table(words), decreasing = TRUE)
+common_words <- names(word_counts)[-seq_len(100)]  # Exclude the top 100 most common words
+
+# Define a function to count common words in a description
+count_common_words <- function(description, common_words, stop_words) {
+  description_words <- unlist(tokenize_words(description))
+  description_words <- tolower(description_words[grepl("^[a-z]+$", description_words)])  # Alphabetical words only
+  description_words <- description_words[!description_words %in% stop_words]
+  sum(description_words %in% common_words)
+}
+
+# Create a New Column for Common Word Count
+merged_df <- merged_df %>% 
+  filter(!is.na(description)) %>% 
+  mutate(common_word_count = sapply(description, count_common_words, common_words, stop_words))
+
+# Display the dataframe without the 'description' column and only the first row
+datatable(head(select(merged_df, -description), 1))
+
+print(head(common_words, 30))
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+# Calculate advertised duration in days
+merged_df <- merged_df %>%
+  mutate(advertised_duration = as.numeric(difftime(expiry, original_listed_time, units = "days")))
+
+# Create scatter plots
+p1 <- ggplot(merged_df, aes(x = views, y = applies)) +
+  geom_point() +
+  ggtitle('Views vs Applies')
+
+p2 <- ggplot(merged_df, aes(x = follower_count, y = applies)) +
+  geom_point() +
+  ggtitle('Follower Count vs Applies')
+
+p3 <- ggplot(merged_df, aes(x = advertised_duration, y = applies)) +
+  geom_point() +
+  ggtitle('Advertised Duration vs Applies')
+
+p4 <- ggplot(merged_df, aes(x = common_word_count, y = follower_count)) +
+  geom_point() +
+  ggtitle('Common Word Count vs Follower Count')
+
+# Arrange plots in a 2x2 grid
+grid.arrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+```
+
+```{r}
+# Create an average salary column
+merged_df <- merged_df %>%
+  mutate(average_salary = if_else(!is.na(min_salary) & !is.na(max_salary),
+                                  (min_salary + max_salary) / 2,
+                                  med_salary))
+
+# Remove entries with no salary and no views or applies data for accurate plotting
+salary_merged_df <- merged_df %>%
+  drop_na(average_salary, views, applies)
+
+# Scatter plot: Views vs Average Salary
+p1 <- ggplot(salary_merged_df, aes(x = average_salary, y = views)) +
+  geom_point(alpha = 0.5) +
+  ggtitle('Views vs Average Salary') +
+  xlab('Average Salary') +
+  ylab('Views') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Scatter plot: Applies vs Average Salary
+p2 <- ggplot(salary_merged_df, aes(x = average_salary, y = applies)) +
+  geom_point(alpha = 0.5) +
+  ggtitle('Applies vs Average Salary') +
+  xlab('Average Salary') +
+  ylab('Applies') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Arrange the scatter plots in a 1x2 grid
+grid.arrange(p1, p2, ncol = 2)
+
+# Remove entries with no remote work data and no views or applies data
+remote_merged_df <- merged_df %>%
+  drop_na(remote_allowed, views, applies)
+
+# Bar plot: Average Views by Remote Work Availability
+p3 <- ggplot(remote_merged_df, aes(x = as.factor(remote_allowed), y = views)) +
+  stat_summary(fun = mean, geom = "bar", fill = "skyblue") +
+  ggtitle('Average Views by Remote Work Availability') +
+  xlab('Remote Work Allowed') +
+  ylab('Average Views') +
+  scale_x_discrete(labels = c('No', 'Yes')) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Bar plot: Average Applies by Remote Work Availability
+p4 <- ggplot(remote_merged_df, aes(x = as.factor(remote_allowed), y = applies)) +
+  stat_summary(fun = mean, geom = "bar", fill = "lightgreen") +
+  ggtitle('Average Applies by Remote Work Availability') +
+  xlab('Remote Work Allowed') +
+  ylab('Average Applies') +
+  scale_x_discrete(labels = c('No', 'Yes')) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Arrange the bar plots in a 1x2 grid
+grid.arrange(p3, p4, ncol = 2)
+
+# Remove entries with no common word count data and no views or applies data
+word_count_merged_df <- merged_df %>%
+  drop_na(common_word_count, views, applies)
+
+# Scatter plot: Views vs Common Word Count
+p5 <- ggplot(word_count_merged_df, aes(x = common_word_count, y = views)) +
+  geom_point(alpha = 0.5) +
+  ggtitle('Views vs Common Word Count') +
+  xlab('Common Word Count') +
+  ylab('Views') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Scatter plot: Applies vs Common Word Count
+p6 <- ggplot(word_count_merged_df, aes(x = common_word_count, y = applies)) +
+  geom_point(alpha = 0.5) +
+  ggtitle('Applies vs Common Word Count') +
+  xlab('Common Word Count') +
+  ylab('Applies') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Arrange the scatter plots in a 1x2 grid
+grid.arrange(p5, p6, ncol = 2)
+```
+
+```{r}
+# Create a new column that denotes whether all 3 salary columns are all NA or not
+merged_df <- merged_df %>%
+  mutate(salary_info_not_present = as.integer(is.na(min_salary) & is.na(max_salary) & is.na(med_salary)))
+
+# Group by the 'salary_info_not_present' column and calculate the average number of applies
+salary_presence_vs_applies <- merged_df %>%
+  group_by(salary_info_not_present) %>%
+  summarize(applies = mean(applies, na.rm = TRUE)) %>%
+  ungroup()
+
+# 'salary_info_present' vs 'applies'
+ggplot(salary_presence_vs_applies, aes(x = factor(salary_info_not_present), y = applies, fill = factor(salary_info_not_present))) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = c("0" = "green", "1" = "red")) +
+  labs(
+    x = "Salary Information Present",
+    y = "Average Number of Applies",
+    title = "Relationship Between Salary Information Presence and Number of Applies",
+    fill = "Salary Info"
+  ) +
+  scale_x_discrete(labels = c("0" = "Salary Info Present", "1" = "Salary Info Not Present")) +
+  theme_minimal()
+```
+
+```{r}
+# Create a new column that denotes whether all 3 salary columns are all NA or not
+merged_df <- merged_df %>%
+  mutate(salary_info_not_present = as.integer(is.na(min_salary) & is.na(max_salary) & is.na(med_salary)))
+
+# Create new columns to indicate whether each individual salary columns are present
+merged_df <- merged_df %>%
+  mutate(min_salary_present = as.integer(!is.na(min_salary)),
+         max_salary_present = as.integer(!is.na(max_salary)),
+         med_salary_present = as.integer(!is.na(med_salary)))
+
+# Impute 0 for NaN values in the salary columns
+merged_df <- merged_df %>%
+  mutate(min_salary = ifelse(is.na(min_salary), 0, min_salary),
+         max_salary = ifelse(is.na(max_salary), 0, max_salary),
+         med_salary = ifelse(is.na(med_salary), 0, med_salary))
+
+# Drop duplicates
+merged_df <- merged_df %>%
+  distinct()
+
+# List of columns for regression
+columns_for_regression <- c(
+  'formatted_experience_level_Associate', 'formatted_experience_level_Director',
+  'formatted_experience_level_Entry level', 'formatted_experience_level_Executive',
+  'formatted_experience_level_Internship', 'formatted_experience_level_Mid-Senior level',
+  'work_type_CONTRACT', 'work_type_FULL_TIME', 'work_type_INTERNSHIP', 'work_type_OTHER',
+  'work_type_PART_TIME', 'work_type_TEMPORARY', 'work_type_VOLUNTEER', 'compensation_type_BASE_SALARY',
+  'pay_period_HOURLY', 'pay_period_MONTHLY', 'pay_period_ONCE', 'pay_period_WEEKLY', 'pay_period_YEARLY',
+  'formatted_work_type_Contract', 'formatted_work_type_Full-time', 'formatted_work_type_Internship',
+  'formatted_work_type_Other', 'formatted_work_type_Part-time', 'formatted_work_type_Temporary',
+  'formatted_work_type_Volunteer', 'application_type_ComplexOnsiteApply', 'application_type_OffsiteApply',
+  'application_type_SimpleOnsiteApply', 'salary_info_not_present', 'max_salary', 'min_salary', 'med_salary',
+  'follower_count', 'remote_allowed', 'advertised_duration', 'common_word_count', 'employee_count', 'sponsored'
+)
+
+
+# Verify which columns exist in the dataframe
+existing_columns <- columns_for_regression[columns_for_regression %in% colnames(merged_df)]
+
+# Drop rows with NaN values in the existing columns
+merged_df <- merged_df %>%
+  drop_na(all_of(existing_columns))
+
+# Impute 0 for NaN values in the 'views' column
+merged_df <- merged_df %>%
+  mutate(views = ifelse(is.na(views), 0, views))
+
+# Define the feature matrix X and the target vector y for the number of applies
+X <- merged_df %>% select(all_of(existing_columns)) %>% as.matrix()
+y_applies <- merged_df$applies
+
+# Split the data into training and testing sets for applies
+set.seed(7)
+train_index <- createDataPartition(y_applies, p = 0.8, list = FALSE)
+X_train_applies <- X[train_index, ]
+X_test_applies <- X[-train_index, ]
+y_train_applies <- y_applies[train_index]
+y_test_applies <- y_applies[-train_index]
+
+# Instantiate and fit the model
+model_applies <- glmnet(X_train_applies, y_train_applies, alpha = 0)
+
+# Predict on the testing data
+y_pred_applies <- predict(model_applies, s = 0, newx = X_test_applies)
+
+# Calculate the mean squared error for applies
+mse_applies <- mean((y_test_applies - y_pred_applies)^2)
+print(paste("Mean Squared Error for Applies:", mse_applies))
+
+# Repeat the process for views
+y_views <- merged_df$views
+train_index <- createDataPartition(y_views, p = 0.8, list = FALSE)
+X_train_views <- X[train_index, ]
+X_test_views <- X[-train_index, ]
+y_train_views <- y_views[train_index]
+y_test_views <- y_views[-train_index]
+
+model_views <- glmnet(X_train_views, y_train_views, alpha = 0)
+y_pred_views <- predict(model_views, s = 0, newx = X_test_views)
+mse_views <- mean((y_test_views - y_pred_views)^2)
+print(paste("Mean Squared Error for Views:", mse_views))
+
+# Retrieve coefficients for the model to determine importance of each feature
+coef_applies <- as.data.frame(as.matrix(coef(model_applies)))
+coef_views <- as.data.frame(as.matrix(coef(model_views)))
+
+colnames(coef_applies) <- "coefficient"
+colnames(coef_views) <- "coefficient"
+coef_applies <- coef_applies[-1, , drop = FALSE] # Remove intercept
+coef_views <- coef_views[-1, , drop = FALSE]     # Remove intercept
+
+coef_applies$abs_coefficient <- abs(coef_applies$coefficient)
+coef_views$abs_coefficient <- abs(coef_views$coefficient)
+
+coef_applies <- coef_applies[order(coef_applies$abs_coefficient, decreasing = TRUE), ]
+coef_views <- coef_views[order(coef_views$abs_coefficient, decreasing = TRUE), ]
+```
+
+Most important features for predicting applies:
+
+```{r}
+datatable(head(coef_applies[, "coefficient", drop = FALSE], 15))
+```
+
+Most important features for predicting views:
+
+```{r}
+datatable(head(coef_views[, "coefficient", drop = FALSE], 15))
+```
